@@ -105,8 +105,8 @@ map:
 	@if exist $(MAP_FILE) (type $(MAP_FILE)) else @echo Error: Archivo de mapa no encontrado. Compilar primero.
 
 clean:
-	@if exist $(BUILD_DIR) rmdir /s /q $(BUILD_DIR)
-	@if exist $(OUTPUT_DIR) rmdir /s /q $(OUTPUT_DIR)
+	@if exist $(BUILD_DIR) ( del /q /s $(BUILD_DIR)\*.* && rmdir /s /q $(BUILD_DIR) )
+	@if exist $(OUTPUT_DIR) ( del /q /s $(OUTPUT_DIR)\*.* && rmdir /s /q $(OUTPUT_DIR) )
 	@echo Limpieza completa
 
 # ============================================================================
