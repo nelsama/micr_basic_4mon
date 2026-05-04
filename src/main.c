@@ -33,6 +33,15 @@ static u8    (*rom_mfs_open)(const char*) = (u8 (*)(const char*))0xBF06;
 static void  (*rom_mfs_close)(void) = (void (*)(void))0xBF0C;
 static u16   (*rom_mfs_get_size)(void) = (u16 (*)(void))0xBF0F;
 static u16   (*rom_mfs_read_ext)(void) = (u16 (*)(void))0xBF27;
+/* Wrappers ASM que manejan conflicto ZP sp ($0026 vs $000E) */
+extern u8  mfs_create_wrap(void);
+extern u16 mfs_write_wrap(void);
+extern u8  mfs_delete_wrap(void);
+extern u8  mfs_open_wrap(void);
+
+/* ZP fijo para pasar argumentos a los wrappers ($F4-$F7, libres) */
+#define WRAP_PTR  (*(volatile u16*)0xF4)
+#define WRAP_VAL  (*(volatile u16*)0xF6)
 
 static volatile u8 *zp_buf_lo = (u8*)0xF0;
 static volatile u8 *zp_buf_hi = (u8*)0xF1;
@@ -42,7 +51,7 @@ static volatile u8 *zp_len_hi = (u8*)0xF3;
 /*-----------------------------------------------------------------------------
   CONFIGURACIÓN Y GLOBALES
 -----------------------------------------------------------------------------*/
-#define PROG_SIZE       4600
+#define PROG_SIZE       3590
 #define VAR_COUNT       26
 #define FOR_STACK_SIZE  8
 #define GOSUB_STACK_SIZE 8
@@ -51,6 +60,7 @@ static volatile u8 *zp_len_hi = (u8*)0xF3;
 
 static s16      vars[VAR_COUNT];
 static char     prog[PROG_SIZE];
+static char     save_buf[64]; /* Buffer temporal para SAVE */
 static char     *tp;
 static char     *cur_line;
 static volatile u8 running;
@@ -139,7 +149,7 @@ static void exec_stmt(void);
 
 static void exec_stmt(void) {
     s16 a,res,n,addr,start,end_val;
-    u8  vi,i,top,req_vi,err,fi;
+    u8  vi,i,top,req_vi,err,fi,dpos;
     char buf[8],fname[16];
     char *s,*p,*save;
     u16 target,fsize,rd;
@@ -292,6 +302,52 @@ static void exec_stmt(void) {
             for_depth=0;for_looping=0;gosub_depth=0;goto next;
         }
 
+        /* --- SAVE (GUARDAR PROGRAMA COMO .BAS) --- */
+        if(match_cmd("SAVE",4)){
+            tp+=4;skip();fi=0;if(*tp=='"')tp++;
+            while(*tp&&*tp!='"'&&*tp!=' '&&*tp!='\r'&&*tp!='\n'&&fi<15)fname[fi++]=*tp++;fname[fi]='\0';
+            err=0;
+            /* Calcular tamaño del formato interno (raw binario, null-separated) */
+            p=prog; fsize=0;
+            while(*p){
+                fsize += my_strlen(p) + 1;  /* linea + separador null */
+                p += my_strlen(p) + 1;
+            }
+            rom_sd_init();if(rom_mfs_mount()!=0)err=1;
+            if(!err){
+                if(fsize>0 && fsize<=64){
+                    /* Eliminar archivo si existe (usa wrapper con ZP) */
+                    WRAP_PTR = (u16)fname;
+                    mfs_delete_wrap();
+                    /* Crear archivo (usa wrapper con ZP) */
+                    WRAP_PTR = (u16)fname;
+                    WRAP_VAL = fsize;
+                    if(mfs_create_wrap()!=0)err=2;
+                    else{
+                        /* Abrir archivo explicitamente para escritura */
+                        WRAP_PTR = (u16)fname;
+                        if(mfs_open_wrap()!=0){ err=7; }
+                        else{
+                            /* Escribir formato raw (null-separated) directamente desde prog */
+                            WRAP_PTR = (u16)prog;
+                            WRAP_VAL = fsize;
+                            if(mfs_write_wrap()!=fsize)err=5;
+                        }
+                    }
+                }else if(fsize==0) err=4; /* Programa vacio */
+                else err=6; /* Archivo demasiado grande para buffer */
+            }
+            rom_mfs_close();
+            if(err){
+                outs("SAVE FAIL (");
+                if(err==1)outs("SD/MOUNT");else if(err==2)outs("CREATE ERR");
+                else if(err==4)outs("EMPTY PROG");else if(err==5)outs("WRITE ERR");else if(err==7)outs("OPEN ERR");else outs("TOO LARGE");
+                outs(")\r\n"); run_abort=1; return;
+            }
+            outs("SAVED ");outn((s16)fsize);outs(" BYTES\r\n");
+            goto next;
+        }
+
         /* --- FOR / NEXT --- */
         if(match_cmd("FOR",3)){
             tp+=3;skip();if(for_looping){for_looping=0;goto next;}
@@ -336,6 +392,19 @@ static void exec_stmt(void) {
 /*-----------------------------------------------------------------------------
   GESTIÓN DE LÍNEAS
 -----------------------------------------------------------------------------*/
+static void delete_line(u16 num) {
+    char *p=prog,*next,*end;
+    while(*p){
+        if(parse_linenum(p)==num){
+            next=p+my_strlen(p)+1;
+            end=prog;while(*end)end+=my_strlen(end)+1;end++;
+            my_memmove(p,next,(u16)(end-next));
+            return;
+        }
+        p+=my_strlen(p)+1;
+    }
+}
+
 static void add_line(u16 num, const char *line) {
     u8 len; char *p,*ins,*end,*next;
     len=my_strlen(line)+1;p=prog;ins=0;
@@ -349,7 +418,7 @@ static void add_line(u16 num, const char *line) {
   MAIN
 -----------------------------------------------------------------------------*/
 int main(void) {
-    u8 i=0; char line[64]; u8 idx=0; char c;
+    u8 i=0; char line[64]; u8 idx=0; char c; u16 line_only_num; char *sp;
     LED_CONF=0xC0;LED_PORT=0x00;prog[0]='\0';while(i<VAR_COUNT){vars[i]=0;i++;}
     running=1;current_line_num=0;run_abort=0;for_depth=0;for_looping=0;gosub_depth=0;
     outs("\r\n6502 TINY BASIC V8.7 (STABLE)\r\nREADY\r\n");
@@ -362,8 +431,13 @@ int main(void) {
             else if(c>=0x20&&c<=0x7E){if(idx<63){if(c>='a'&&c<='z')c-=32;line[idx]=c;outc(c);idx++;}}
         }
         if(idx==0)continue;tp=line;
-        if(*tp>='0'&&*tp<='9')add_line(parse_linenum(tp),line);
-        else if(match_cmd("RUN",3)){
+        if(*tp>='0'&&*tp<='9'){
+            line_only_num=parse_linenum(tp);
+            sp=tp; while(*sp>='0'&&*sp<='9') sp++;
+            while(*sp==' ') sp++;
+            if(*sp=='\0') delete_line(line_only_num);
+            else add_line(line_only_num,line);
+        }else if(match_cmd("RUN",3)){
             cur_line=prog;do_goto=0;run_abort=0;for_depth=0;for_looping=0;gosub_depth=0;
             while(*cur_line&&running&&!run_abort){
                 current_line_num=parse_linenum(cur_line);tp=cur_line;while(*tp>='0'&&*tp<='9')tp++;

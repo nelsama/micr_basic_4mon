@@ -51,6 +51,16 @@
 #define ROMAPI_DELAY_US     0xBF30
 #define ROMAPI_DELAY_MS     0xBF33
 
+/* UART - Nuevas funciones (añadidas al final para mantener compatibilidad) */
+#define ROMAPI_UART_CLEAR_ERRORS 0xBF36
+#define ROMAPI_UART_SET_BAUDRATE 0xBF39
+
+/* MicroFS - Nuevas funciones de escritura */
+#define ROMAPI_MFS_CREATE   0xBF3C
+#define ROMAPI_MFS_WRITE    0xBF3F
+#define ROMAPI_MFS_DELETE   0xBF42
+#define ROMAPI_MFS_FORMAT   0xBF45
+
 /* Magic y versión */
 #define ROMAPI_MAGIC_ADDR   0xBF50
 #define ROMAPI_MAGIC        "ROMAPI"
@@ -83,6 +93,12 @@ typedef struct {
 
 #define rom_mfs_list(idx,info) (((uint8_t (*)(uint8_t, rom_mfs_fileinfo_t*))ROMAPI_MFS_LIST)(idx, info))
 
+/* MicroFS - Funciones de escritura */
+#define rom_mfs_create(name,size) (((uint8_t (*)(const char*, uint16_t))ROMAPI_MFS_CREATE)(name, size))
+#define rom_mfs_write(buf,len) (((uint16_t (*)(const void*, uint16_t))ROMAPI_MFS_WRITE)(buf, len))
+#define rom_mfs_delete(name) (((uint8_t (*)(const char*))ROMAPI_MFS_DELETE)(name))
+#define rom_mfs_format() (((uint8_t (*)(void))ROMAPI_MFS_FORMAT)())
+
 /* UART */
 #define rom_uart_init()     (((void (*)(void))ROMAPI_UART_INIT)())
 #define rom_uart_putc(c)    (((void (*)(char))ROMAPI_UART_PUTC)(c))
@@ -90,6 +106,8 @@ typedef struct {
 #define rom_uart_puts(s)    (((void (*)(const char*))ROMAPI_UART_PUTS)(s))
 #define rom_uart_rx_ready() (((uint8_t (*)(void))ROMAPI_UART_RX_READY)())
 #define rom_uart_tx_ready() (((uint8_t (*)(void))ROMAPI_UART_TX_READY)())
+#define rom_uart_clear_errors() (((void (*)(void))ROMAPI_UART_CLEAR_ERRORS)())
+#define rom_uart_set_baudrate(div) (((void (*)(uint16_t))ROMAPI_UART_SET_BAUDRATE)(div))
 
 /* XMODEM */
 #define rom_xmodem_receive(addr) (((int (*)(unsigned int))ROMAPI_XMODEM_RECV)(addr))
@@ -98,6 +116,17 @@ typedef struct {
 #define rom_get_micros()    (((uint32_t (*)(void))ROMAPI_GET_MICROS)())
 #define rom_delay_us(us)    (((void (*)(uint16_t))ROMAPI_DELAY_US)(us))
 #define rom_delay_ms(ms)    (((void (*)(uint16_t))ROMAPI_DELAY_MS)(ms))
+
+/* ===========================================================================
+ * CONSTANTES DE BAUDRATE UART (para uso con rom_uart_set_baudrate)
+ * ===========================================================================
+ * Divisores para CLK 6.75 MHz
+ */
+#define ROM_UART_BAUD_9600      703     /* $02BF */
+#define ROM_UART_BAUD_19200     351     /* $015F */
+#define ROM_UART_BAUD_38400     175     /* $00AF */
+#define ROM_UART_BAUD_57600     117     /* $0075 */
+#define ROM_UART_BAUD_115200    58      /* $003A - Por defecto */
 
 /* ===========================================================================
  * EJEMPLOS DE USO
@@ -113,8 +142,16 @@ typedef struct {
  *   uint32_t elapsed = rom_get_micros() - start;
  * 
  * UART:
+ *   rom_uart_init();
  *   rom_uart_puts("Hola mundo!\r\n");
  *   char c = rom_uart_getc();
+ *   
+ *   // Configurar baudrate
+ *   rom_uart_set_baudrate(ROM_UART_BAUD_9600);   // Cambiar a 9600 bps
+ *   rom_uart_set_baudrate(ROM_UART_BAUD_115200); // Volver a 115200 bps
+ *   
+ *   // Limpiar flags de error
+ *   rom_uart_clear_errors();
  * 
  * SD Card + MicroFS:
  *   rom_sd_init();

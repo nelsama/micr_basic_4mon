@@ -40,11 +40,11 @@ MAP_FILE = $(OUTPUT_DIR)\$(PROGRAM_NAME).map
 
 # Archivos fuente
 C_SOURCES = $(SRC_DIR)\main.c
-ASM_SOURCES = $(SRC_DIR)\startup.s
+ASM_SOURCES = $(SRC_DIR)\startup.s $(SRC_DIR)\romwrap.s
 
 # Archivos objeto
 C_OBJECTS = $(BUILD_DIR)\main.o
-ASM_OBJECTS = $(BUILD_DIR)\startup.o
+ASM_OBJECTS = $(BUILD_DIR)\startup.o $(BUILD_DIR)\romwrap.o
 
 OBJECTS = $(ASM_OBJECTS) $(C_OBJECTS)
 
@@ -83,7 +83,10 @@ $(BUILD_DIR)\main.o: $(C_SOURCES)
 	$(CC) -c $(CFLAGS) -o $@ $<
 
 # Ensamblar
-$(BUILD_DIR)\startup.o: $(ASM_SOURCES)
+$(BUILD_DIR)\startup.o: $(SRC_DIR)\startup.s
+	$(CA65) $(ASFLAGS) -o $@ $<
+
+$(BUILD_DIR)\romwrap.o: $(SRC_DIR)\romwrap.s
 	$(CA65) $(ASFLAGS) -o $@ $<
 
 # Linkar
