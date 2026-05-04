@@ -8,17 +8,24 @@
 ;; basura (los args estan en el stack del programa apuntado por $0026).
 ;;
 ;; SOLUCION: Estos wrappers reciben argumentos via ZP fija ($F4-$F7),
-;; guardan/restauran el sp de la ROM ($000E) y pushean TODOS los
-;; argumentos al stack de la ROM antes de llamar a la funcion.
+;; guardan/restauran el sp de la ROM ($000E) y pushean los argumentos
+;; al stack de la ROM antes de llamar a la funcion.
 ;;
-;; Las funciones ROM son C standard (NO fastcall) - todos los args
-;; van en el software stack, orden right-to-left.
+;; CONVENCIONES DE LLAMADA (cada funcion usa una distinta):
+;;   mfs_create(name, size): push size al stack, name en AX
+;;   mfs_write(buf, len):    push buf al stack, len en AX
+;;   mfs_open(name):         fastcall (name en AX, no usa stack)
+;;   mfs_delete(name):       fastcall (name en AX, no usa stack)
+;;
+;; La funcion hace pushax en su prologo, salvando AX al tope del stack.
+;; Por eso solo se pushea UN argumento al stack; el otro va en AX.
+;;
+;; Optimizacion: Subrutina comun push_rom_sp para evitar codigo repetido.
 ;;
 ;; ZP usage:
-;;   $F4-$F5 = puntero (little-endian)
-;;   $F6-$F7 = valor/tamano (little-endian)
-;;
-;; $F0-$F3 NO se usan (reservados para mfs_read_ext por la ROM API)
+;;   $F0-$F3 = usados por mfs_read_ext (ROM API)
+;;   $F4-$F5 = WRAP_PTR (puntero, little-endian)
+;;   $F6-$F7 = WRAP_VAL (valor/tamano, little-endian)
 ;;
 ;; ===========================================================================
 
@@ -27,6 +34,30 @@
 .export _mfs_delete_wrap
 .export _mfs_open_wrap
 
+.segment "CODE"
+
+; ===========================================================================
+; push_rom_sp - Subrutina para pushear AX al stack de la ROM ($000E)
+; ===========================================================================
+; Entrada: AX = valor de 2 bytes a pushear (little-endian, A=lo, X=hi)
+; Efecto:  Decrementa $000E en 2 y almacena AX ahi
+; ===========================================================================
+push_rom_sp:
+    pha                    ; guardar lo byte en HW stack temporal
+    sec
+    lda $0E
+    sbc #2
+    sta $0E
+    lda $0F
+    sbc #0
+    sta $0F
+    ldy #0
+    pla                    ; recuperar lo byte
+    sta ($0E),y
+    iny
+    txa                    ; hi byte desde X
+    sta ($0E),y
+    rts
 
 ; ===========================================================================
 ; mfs_open_wrap - Abre un archivo en MicroFS
@@ -38,12 +69,10 @@
 ;   _mfs_open(const char *name) - fastcall: nombre en AX
 ; ===========================================================================
 _mfs_open_wrap:
-    ; Poner nombre en AX (fastcall - no necesita stack)
+    ; Poner nombre en AX (fastcall - no necesita stack ni save $0E)
     lda $F4
     ldx $F5
-    ; Llamar a mfs_open en ROM
     jsr $BF06
-    ; Guardar valor de retorno
     sta $F6
     rts
 
@@ -58,8 +87,6 @@ _mfs_open_wrap:
 ;   _mfs_create(const char *name, unsigned int size) - C standard calling conv.
 ;   Stack: [size_lo, size_hi, name_lo, name_hi] (right-to-left push order)
 ; ===========================================================================
-.segment "CODE"
-
 _mfs_create_wrap:
     ; Guardar sp de la ROM ($000E) en HW stack
     lda $0E
@@ -67,43 +94,21 @@ _mfs_create_wrap:
     lda $0F
     pha
 
-    ; Push arg2 (size) al stack ROM
-    sec
-    lda $0E
-    sbc #2
-    sta $0E
-    lda $0F
-    sbc #0
-    sta $0F
-    ldy #0
-    lda $F6          ; size low byte
-    sta ($0E),y
-    iny
-    lda $F7          ; size high byte
-    sta ($0E),y
+    ; Push arg2 (size) al stack ROM usando subrutina comun
+    lda $F6
+    ldx $F7
+    jsr push_rom_sp
 
-    ; Push arg1 (name) al stack ROM
-    sec
-    lda $0E
-    sbc #2
-    sta $0E
-    lda $0F
-    sbc #0
-    sta $0F
-    ldy #0
-    lda $F4          ; name low byte
-    sta ($0E),y
-    iny
-    lda $F5          ; name high byte
-    sta ($0E),y
+    ; Push arg1 (name) al stack ROM usando subrutina comun
+    lda $F4
+    ldx $F5
+    jsr push_rom_sp
 
     ; Llamar a mfs_create en ROM
     jsr $BF3C
 
-    ; Guardar valor de retorno (A)
+    ; Guardar valor de retorno (A) y restaurar sp ROM
     sta $F6
-
-    ; Restaurar sp de la ROM
     pla
     sta $0F
     pla
@@ -131,20 +136,10 @@ _mfs_write_wrap:
     lda $0F
     pha
 
-    ; Push arg1 (buf): la funcion espera buf en stack
-    sec
-    lda $0E
-    sbc #2
-    sta $0E
-    lda $0F
-    sbc #0
-    sta $0F
-    ldy #0
-    lda $F4          ; buf low byte
-    sta ($0E),y
-    iny
-    lda $F5          ; buf high byte
-    sta ($0E),y
+    ; Push arg1 (buf) usando subrutina comun
+    lda $F4
+    ldx $F5
+    jsr push_rom_sp
 
     ; AX = arg2 (len): la funcion espera len en AX
     lda $F6

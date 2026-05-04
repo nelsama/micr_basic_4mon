@@ -1,6 +1,18 @@
 /*=============================================================================
-  6502 TINY BASIC - Intérprete C89 para cc65/6502 + Tang Nano 9K
-  Versión: 8.7 (Estándar, Sin TX/RX, PRINT ;, GOSUB, STOP, LOAD Binario)
+  6502 TINY BASIC - Interprete C89 para cc65/6502 + Tang Nano 9K
+  Version: 9.0
+  Funcionalidades:
+    - PRINT multi-argumento (; y ,)
+    - IF...THEN con =, ==, >, <
+    - GOTO, GOSUB/RETURN (8 niveles max)
+    - FOR/NEXT (8 niveles max)
+    - INPUT, GET, STOP
+    - LEDS, POKE, PEEK
+    - WAIT (milisegundos via ROM API)
+    - LOAD/SAVE en SD Card via ROM API + wrappers ASM
+    - Eliminacion de linea (solo numero)
+    - Edicion interactiva con REPL
+  Memoria de programa: 4500 bytes
   Compilar: cl65 -c -t none -O --cpu 6502 -I src -I include -o build/main.o src/main.c
 =============================================================================*/
 
@@ -51,7 +63,7 @@ static volatile u8 *zp_len_hi = (u8*)0xF3;
 /*-----------------------------------------------------------------------------
   CONFIGURACIÓN Y GLOBALES
 -----------------------------------------------------------------------------*/
-#define PROG_SIZE       3590
+#define PROG_SIZE       4500
 #define VAR_COUNT       26
 #define FOR_STACK_SIZE  8
 #define GOSUB_STACK_SIZE 8
@@ -60,7 +72,7 @@ static volatile u8 *zp_len_hi = (u8*)0xF3;
 
 static s16      vars[VAR_COUNT];
 static char     prog[PROG_SIZE];
-static char     save_buf[64]; /* Buffer temporal para SAVE */
+
 static char     *tp;
 static char     *cur_line;
 static volatile u8 running;
@@ -149,7 +161,7 @@ static void exec_stmt(void);
 
 static void exec_stmt(void) {
     s16 a,res,n,addr,start,end_val;
-    u8  vi,i,top,req_vi,err,fi,dpos;
+    u8  vi,i,top,req_vi,err,fi;
     char buf[8],fname[16];
     char *s,*p,*save;
     u16 target,fsize,rd;
@@ -158,7 +170,7 @@ static void exec_stmt(void) {
     while(1){
         skip(); if(!*tp||*tp=='\r'||*tp=='\n') return;
         if(match_cmd("REM",3)){while(*tp&&*tp!='\r'&&*tp!='\n')tp++; return;}
-        
+
         /* --- PRINT MULTI-ARGUMENTO --- */
         if(match_cmd("PRINT",5)){
             tp += 5; skip();
@@ -196,7 +208,7 @@ static void exec_stmt(void) {
                             }
                             p+=my_strlen(p)+1;
                         }
-                        outs("LINE NOT FOUND\r\n"); run_abort=1; return;
+                        outs("NO LN\r\n"); run_abort=1; return;
                     }
                     exec_stmt(); if(do_goto) return;
                 } else {
@@ -213,22 +225,22 @@ static void exec_stmt(void) {
                 if(*p>='0'&&*p<='9'&&parse_linenum(p)==target){cur_line=p;do_goto=1;return;}
                 p+=my_strlen(p)+1;
             }
-            outs("LINE NOT FOUND\r\n"); run_abort=1; return;
+            outs("NO LN\r\n"); run_abort=1; return;
         }
 
         /* --- GOSUB --- */
         if(match_cmd("GOSUB",5)){
             if(gosub_depth<GOSUB_STACK_SIZE){
                 tp+=5; skip(); target=(u16)expr();
-                gosub_stack[gosub_depth].line_ptr=cur_line; 
+                gosub_stack[gosub_depth].line_ptr=cur_line;
                 gosub_stack[gosub_depth].text_ptr=tp;
-                p=prog; 
+                p=prog;
                 while(*p){
                     if(*p>='0'&&*p<='9'&&parse_linenum(p)==target){cur_line=p;do_goto=1;gosub_depth++;return;}
                     p+=my_strlen(p)+1;
                 }
-                outs("LINE NOT FOUND\r\n"); run_abort=1;
-            } else { outs("GOSUB STACK FULL\r\n"); run_abort=1; }
+                outs("NO LN\r\n"); run_abort=1;
+            } else { outs("GOSUB FULL\r\n"); run_abort=1; }
             return;
         }
 
@@ -239,7 +251,7 @@ static void exec_stmt(void) {
                 cur_line=gosub_stack[gosub_depth].line_ptr;
                 tp=gosub_stack[gosub_depth].text_ptr;
                 goto next;
-            } else { outs("RETURN WITHOUT GOSUB\r\n"); run_abort=1; return; }
+            } else { outs("NO GOSUB\r\n"); run_abort=1; return; }
         }
 
         /* --- INPUT --- */
@@ -264,14 +276,14 @@ static void exec_stmt(void) {
         /* --- COMANDOS RESTANTES --- */
         if(match_cmd("LEDS",4)){tp+=4;skip();LED_PORT=(u8)expr();goto next;}
         if(match_cmd("POKE",4)){tp+=4;skip();addr=(u16)expr();skip();if(*tp==',')tp++;*(volatile u8*)addr=(u8)expr();goto next;}
-        if(match_cmd("WAIT",4)){tp+=4;skip();if(*tp=='\r'||*tp=='\n'||*tp==':'){outs("WAIT EXPECTS ARG\r\n");run_abort=1;return;}wait_ms((u16)expr());goto next;}
+        if(match_cmd("WAIT",4)){tp+=4;skip();if(*tp=='\r'||*tp=='\n'||*tp==':'){outs("WAIT ARG\r\n");run_abort=1;return;}wait_ms((u16)expr());goto next;}
         if(match_cmd("GET",3)){tp+=3;skip();if(*tp>='A'&&*tp<='Z')vars[*tp++-'A']=uart_rx_ready()?(s16)uart_rx():0;goto next;}
-        if(match_cmd("FREE",4)){u16 used=0;p=prog;while(*p){used+=my_strlen(p)+1;p+=my_strlen(p)+1;}outn((s16)(PROG_SIZE-used));outs(" BYTES FREE\r\n");goto next;}
+        if(match_cmd("FREE",4)){u16 used=0;p=prog;while(*p){used+=my_strlen(p)+1;p+=my_strlen(p)+1;}outn((s16)(PROG_SIZE-used));outs(" B FREE\r\n");goto next;}
         if(match_cmd("NEW",3)){prog[0]='\0';for_depth=0;for_looping=0;gosub_depth=0;outs("OK\r\n");goto next;}
         if(match_cmd("LIST",4)){p=prog;while(*p){outs(p);outs("\r\n");p+=my_strlen(p)+1;}goto next;}
         if(match_cmd("STOP",4)){run_abort=1; return;}
         if(match_cmd("QUIT",4)){outs("BYE\r\n");running=0;asm("JMP $8000");return;}
-        
+
         /* --- LOAD (BINARIO DIRECTO) --- */
         if(match_cmd("LOAD",4)){
             tp+=4;skip();fi=0;if(*tp=='"')tp++;
@@ -293,12 +305,12 @@ static void exec_stmt(void) {
             }
             rom_mfs_close();
             if(err){
-                outs("LOAD FAIL (");
-                if(err==1)outs("SD/MOUNT");else if(err==2)outs("FILE NOT FOUND");
-                else if(err==3)outs("EMPTY/LARGE");else outs("READ ERR");
-                outs(")\r\n"); run_abort=1; return;
+                outs("LD FAIL ");
+                    if(err==1)outs("SD");else if(err==2)outs("NF");
+                    else if(err==3)outs("SZ");else outs("RD");
+                    outs("\r\n"); run_abort=1; return;
             }
-            outs("LOADED ");outn((s16)rd);outs(" BYTES\r\n");
+            outs("LD ");outn((s16)rd);outs("B\r\n");
             for_depth=0;for_looping=0;gosub_depth=0;goto next;
         }
 
@@ -315,7 +327,7 @@ static void exec_stmt(void) {
             }
             rom_sd_init();if(rom_mfs_mount()!=0)err=1;
             if(!err){
-                if(fsize>0 && fsize<=64){
+                if(fsize>0){
                     /* Eliminar archivo si existe (usa wrapper con ZP) */
                     WRAP_PTR = (u16)fname;
                     mfs_delete_wrap();
@@ -334,17 +346,16 @@ static void exec_stmt(void) {
                             if(mfs_write_wrap()!=fsize)err=5;
                         }
                     }
-                }else if(fsize==0) err=4; /* Programa vacio */
-                else err=6; /* Archivo demasiado grande para buffer */
+                }else err=4; /* Programa vacio */
             }
             rom_mfs_close();
             if(err){
-                outs("SAVE FAIL (");
-                if(err==1)outs("SD/MOUNT");else if(err==2)outs("CREATE ERR");
-                else if(err==4)outs("EMPTY PROG");else if(err==5)outs("WRITE ERR");else if(err==7)outs("OPEN ERR");else outs("TOO LARGE");
-                outs(")\r\n"); run_abort=1; return;
+                outs("SV FAIL ");
+                    if(err==1)outs("SD");else if(err==2)outs("CR");
+                    else if(err==4)outs("MT");else if(err==5)outs("WR");else if(err==7)outs("OP");else outs("BIG");
+                    outs("\r\n"); run_abort=1; return;
             }
-            outs("SAVED ");outn((s16)fsize);outs(" BYTES\r\n");
+            outs("SV ");outn((s16)fsize);outs("B\r\n");
             goto next;
         }
 
@@ -361,31 +372,31 @@ static void exec_stmt(void) {
                             vars[vi]=start;for_stack[for_depth].var_idx=vi;
                             for_stack[for_depth].end_val=end_val;for_stack[for_depth].line_ptr=cur_line;
                             for_stack[for_depth].line_num=current_line_num;for_depth++;
-                        }else{outs("FOR STACK FULL\r\n");run_abort=1;}
+                        }else{outs("FOR FULL\r\n");run_abort=1;}
                         goto next;
                     }
                 }
             }
-            outs("SYNTAX ERROR IN FOR\r\n");run_abort=1;return;
+            outs("SYN FOR\r\n");run_abort=1;return;
         }
         if(match_cmd("NEXT",4)){
             tp+=4;skip();
             if(for_depth>0){
                 top=for_depth-1;vi=for_stack[top].var_idx;
-                if(*tp>='A'&&*tp<='Z'){req_vi=*tp-'A';if(req_vi!=vi){outs("NEXT WITHOUT FOR\r\n");run_abort=1;return;}tp++;skip();}
+                if(*tp>='A'&&*tp<='Z'){req_vi=*tp-'A';if(req_vi!=vi){outs("NO FOR\r\n");run_abort=1;return;}tp++;skip();}
                 vars[vi]+=1;end_val=for_stack[top].end_val;
                 done=(vars[vi]>end_val);
                 if(done)for_depth--;
                 else{cur_line=for_stack[top].line_ptr;do_goto=1;for_looping=1;}
                 goto next;
-            }else{outs("NEXT WITHOUT FOR\r\n");run_abort=1;return;}
+            }else{outs("NO FOR\r\n");run_abort=1;return;}
         }
 
         /* --- ASIGNACIÓN --- */
         if(match_cmd("LET",3)){tp+=3;skip();}
         if(*tp>='A'&&*tp<='Z'){save=tp;vi=(u8)(*tp++-'A');skip();if(*tp=='='){tp++;vars[vi]=expr();goto next;}tp=save;}
 
-        outs("SYNTAX ERROR IN LINE ");outn(current_line_num);outs("\r\n");run_abort=1;return;
+        outs("SYN ");outn(current_line_num);outs("\r\n");run_abort=1;return;
     next: skip(); if(*tp==':'){tp++;continue;} return; }
 }
 
@@ -410,7 +421,7 @@ static void add_line(u16 num, const char *line) {
     len=my_strlen(line)+1;p=prog;ins=0;
     while(*p){if(parse_linenum(p)==num){next=p+my_strlen(p)+1;end=prog;while(*end)end+=my_strlen(end)+1;end++;my_memmove(p,next,(u16)(end-next));p=prog;continue;}p+=my_strlen(p)+1;}
     p=prog;while(*p){if(parse_linenum(p)>num){ins=p;break;}p+=my_strlen(p)+1;}if(!ins)ins=p;
-    end=prog;while(*end)end+=my_strlen(end)+1;if((u16)(end-prog)+len>=PROG_SIZE){outs("MEM FULL\r\n");return;}
+    end=prog;while(*end)end+=my_strlen(end)+1;if((u16)(end-prog)+len>=PROG_SIZE){outs("FULL\r\n");return;}
     my_memmove(ins+len,ins,(u16)(end-ins+1));{u8 i=0;while(i<len){ins[i]=line[i];i++;}}
 }
 
@@ -421,7 +432,9 @@ int main(void) {
     u8 i=0; char line[64]; u8 idx=0; char c; u16 line_only_num; char *sp;
     LED_CONF=0xC0;LED_PORT=0x00;prog[0]='\0';while(i<VAR_COUNT){vars[i]=0;i++;}
     running=1;current_line_num=0;run_abort=0;for_depth=0;for_looping=0;gosub_depth=0;
-    outs("\r\n6502 TINY BASIC V8.7 (STABLE)\r\nREADY\r\n");
+    outs("\r\n6502 TINY BASIC V9.0 - ");
+    outn((s16)PROG_SIZE);
+    outs(" BYTES FREE\r\nREADY\r\n");
     while(running){
         outs("> ");idx=0;
         while(1){
