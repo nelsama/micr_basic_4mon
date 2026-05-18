@@ -1,29 +1,32 @@
 /*=============================================================================
   6502 TINY BASIC - Interprete C89 para cc65/6502 + Tang Nano 9K
-  Version: 9.0
+  Version: 10.0
   Funcionalidades:
     - PRINT multi-argumento (; y ,)
     - IF...THEN con =, ==, >, <
     - GOTO, GOSUB/RETURN (8 niveles max)
     - FOR/NEXT (8 niveles max)
-    - INPUT, GET, STOP
+    - INPUT, GET, STOP, REM
     - LEDS, POKE, PEEK
     - WAIT (milisegundos via ROM API)
-    - LOAD/SAVE en SD Card via ROM API + wrappers ASM
+    - LOAD/SAVE en SD Card via ROM API v2.5.5 (_via_zp)
     - Eliminacion de linea (solo numero)
     - Edicion interactiva con REPL
-  Memoria de programa: 4500 bytes
+  Memoria de programa: 4600 bytes
   Compilar: cl65 -c -t none -O --cpu 6502 -I src -I include -o build/main.o src/main.c
 =============================================================================*/
 
 #include <stdint.h>
+#include "romapi.h"
 
 /*-----------------------------------------------------------------------------
-  TIPOS EXPLÍCITOS (C89 compatible)
+  TIPOS EXPLICITOS (C89 compatible)
 -----------------------------------------------------------------------------*/
 typedef unsigned char  u8;
 typedef unsigned int   u16;
 typedef signed int     s16;
+
+static void (*rom_delay)(u16) = (void (*)(u16))0xBF33;
 
 /*-----------------------------------------------------------------------------
   ACCESO DIRECTO A HARDWARE (Uso interno del intérprete)
@@ -36,34 +39,9 @@ static u8   uart_rx(void) { while ((UART_STATUS & 2) == 0); return UART_DATA; }
 static u8   uart_rx_ready(void) { return (UART_STATUS & 2) != 0; }
 
 /*-----------------------------------------------------------------------------
-  ROM API RESTANTE (Delay y SD)
+  CONFIGURACION Y GLOBALES
 -----------------------------------------------------------------------------*/
-static void (*rom_delay)(u16) = (void (*)(u16))0xBF33;
-static u8    (*rom_sd_init)(void)   = (u8 (*)(void))0xBF00;
-static u8    (*rom_mfs_mount)(void) = (u8 (*)(void))0xBF03;
-static u8    (*rom_mfs_open)(const char*) = (u8 (*)(const char*))0xBF06;
-static void  (*rom_mfs_close)(void) = (void (*)(void))0xBF0C;
-static u16   (*rom_mfs_get_size)(void) = (u16 (*)(void))0xBF0F;
-static u16   (*rom_mfs_read_ext)(void) = (u16 (*)(void))0xBF27;
-/* Wrappers ASM que manejan conflicto ZP sp ($0026 vs $000E) */
-extern u8  mfs_create_wrap(void);
-extern u16 mfs_write_wrap(void);
-extern u8  mfs_delete_wrap(void);
-extern u8  mfs_open_wrap(void);
-
-/* ZP fijo para pasar argumentos a los wrappers ($F4-$F7, libres) */
-#define WRAP_PTR  (*(volatile u16*)0xF4)
-#define WRAP_VAL  (*(volatile u16*)0xF6)
-
-static volatile u8 *zp_buf_lo = (u8*)0xF0;
-static volatile u8 *zp_buf_hi = (u8*)0xF1;
-static volatile u8 *zp_len_lo = (u8*)0xF2;
-static volatile u8 *zp_len_hi = (u8*)0xF3;
-
-/*-----------------------------------------------------------------------------
-  CONFIGURACIÓN Y GLOBALES
------------------------------------------------------------------------------*/
-#define PROG_SIZE       4500
+#define PROG_SIZE       4600
 #define VAR_COUNT       26
 #define FOR_STACK_SIZE  8
 #define GOSUB_STACK_SIZE 8
@@ -296,9 +274,7 @@ static void exec_stmt(void) {
                     fsize=rom_mfs_get_size();
                     if(fsize==0||fsize>=PROG_SIZE)err=3;
                     else{
-                        *zp_buf_lo=(u8)(u16)prog; *zp_buf_hi=(u8)((u16)prog>>8);
-                        *zp_len_lo=(u8)fsize; *zp_len_hi=(u8)(fsize>>8);
-                        rd=rom_mfs_read_ext(); prog[rd]='\0';
+                        rd=rom_mfs_read_via_zp(prog,fsize); prog[rd]='\0';
                         if(rd!=fsize)err=4;
                     }
                 }
@@ -328,22 +304,16 @@ static void exec_stmt(void) {
             rom_sd_init();if(rom_mfs_mount()!=0)err=1;
             if(!err){
                 if(fsize>0){
-                    /* Eliminar archivo si existe (usa wrapper con ZP) */
-                    WRAP_PTR = (u16)fname;
-                    mfs_delete_wrap();
-                    /* Crear archivo (usa wrapper con ZP) */
-                    WRAP_PTR = (u16)fname;
-                    WRAP_VAL = fsize;
-                    if(mfs_create_wrap()!=0)err=2;
+                    /* Eliminar archivo si existe */
+                    rom_mfs_delete(fname);
+                    /* Crear archivo via ZP */
+                    if(rom_mfs_create_via_zp((u16)fname,fsize)!=0)err=2;
                     else{
-                        /* Abrir archivo explicitamente para escritura */
-                        WRAP_PTR = (u16)fname;
-                        if(mfs_open_wrap()!=0){ err=7; }
+                        /* Abrir archivo */
+                        if(rom_mfs_open(fname)!=0){ err=7; }
                         else{
-                            /* Escribir formato raw (null-separated) directamente desde prog */
-                            WRAP_PTR = (u16)prog;
-                            WRAP_VAL = fsize;
-                            if(mfs_write_wrap()!=fsize)err=5;
+                            /* Escribir via ZP */
+                            if(rom_mfs_write_via_zp((u16)prog,fsize)!=fsize)err=5;
                         }
                     }
                 }else err=4; /* Programa vacio */
@@ -361,7 +331,7 @@ static void exec_stmt(void) {
 
         /* --- FOR / NEXT --- */
         if(match_cmd("FOR",3)){
-            tp+=3;skip();if(for_looping){for_looping=0;goto next;}
+            tp+=3;skip();if(for_looping){for_looping=0;do_goto=0;goto next;}
             if(*tp>='A'&&*tp<='Z'){
                 vi=*tp++-'A';skip();
                 if(*tp=='='){
@@ -432,7 +402,7 @@ int main(void) {
     u8 i=0; char line[64]; u8 idx=0; char c; u16 line_only_num; char *sp;
     LED_CONF=0xC0;LED_PORT=0x00;prog[0]='\0';while(i<VAR_COUNT){vars[i]=0;i++;}
     running=1;current_line_num=0;run_abort=0;for_depth=0;for_looping=0;gosub_depth=0;
-    outs("\r\n6502 TINY BASIC V9.0 - ");
+    outs("\r\n6502 TINY BASIC V10.0 - ");
     outn((s16)PROG_SIZE);
     outs(" BYTES FREE\r\nREADY\r\n");
     while(running){

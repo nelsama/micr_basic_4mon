@@ -10,6 +10,7 @@
 
 .import _main
 .import __BSS_RUN__, __BSS_SIZE__
+.import __STACKSTART__
 .importzp sp
 
 ; Variables temporales en zero page
@@ -24,24 +25,24 @@ _init:
     ; Deshabilitar interrupciones durante init
     sei
     cld
-    
+
     ; Inicializar stack pointer del 6502
     ldx #$FF
     txs
-    
+
     ; Inicializar stack pointer de CC65 (software stack)
-    ; Usar $3DFF como tope del stack
-    lda #<$3DFF
+    ; Usar __STACKSTART__ del linker config ($3F99)
+    lda #<__STACKSTART__
     sta sp
-    lda #>$3DFF
+    lda #>__STACKSTART__
     sta sp+1
-    
+
     ; Inicializar BSS a ceros
     jsr zerobss
-    
+
     ; Llamar a main
     jsr _main
-    
+
     ; Si main retorna, saltar al monitor en ROM
     jmp $8000
 
@@ -53,42 +54,42 @@ zerobss:
     lda #<__BSS_SIZE__
     ora #>__BSS_SIZE__
     beq @done
-    
+
     ; Inicializar puntero al inicio de BSS
     lda #<__BSS_RUN__
     sta ptr1
     lda #>__BSS_RUN__
     sta ptr1+1
-    
+
     ; Contador de bytes
     lda #<__BSS_SIZE__
     sta count
     lda #>__BSS_SIZE__
     sta count+1
-    
+
     ; Llenar con ceros
     ldy #0
     lda #0
 @loop:
     sta (ptr1),y
-    
+
     ; Incrementar puntero
     inc ptr1
     bne @skip
     inc ptr1+1
 @skip:
-    
+
     ; Decrementar contador
     lda count
     bne @dec_low
     dec count+1
 @dec_low:
     dec count
-    
+
     ; Verificar si terminamos
     lda count
     ora count+1
     bne @loop
-    
+
 @done:
     rts

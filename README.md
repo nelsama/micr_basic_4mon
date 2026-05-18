@@ -1,18 +1,18 @@
 # Manual de Usuario: 6502 Tiny BASIC
-**Versión:** 8.7  
+**VersiOn:** 10.0
 **Plataforma:** FPGA Tang Nano 9K / Nexys (Arquitectura 6502)
 
-Intérprete de BASIC minimalista para procesador 6502 implementado en FPGA.
-Control directo de hardware (LEDs, memoria mapeada), gestión de archivos en SD
-y lógica aritmética con variables enteras de 16 bits.
+Interprete de BASIC minimalista para procesador 6502 implementado en FPGA.
+Control directo de hardware (LEDs, memoria mapeada), gestion de archivos en SD
+y logica aritmetica con variables enteras de 16 bits.
 
 ---
 
-## 1. Especificaciones Técnicas
+## 1. Especificaciones Tecnicas
 
-| Característica | Valor |
+| Caracteristica | Valor |
 |:---|---:|
-| **Memoria de programa** | 4500 bytes (~4.5 KB) |
+| **Memoria de programa** | 4600 bytes (~4.6 KB) |
 | **Variables** | 26 globales (A-Z), entero 16 bits con signo |
 | **Aritmética** | `+`, `-`, `*`, `/`, `%`, paréntesis |
 | **Comparación** | `=`, `==`, `>`, `<` |
